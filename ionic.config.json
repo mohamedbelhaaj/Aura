@@ -1,0 +1,7 @@
+{
+  "name": "TinderClone",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "react-vite"
+}

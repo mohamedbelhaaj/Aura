@@ -1,0 +1,11 @@
+/* For information on how to create your own theme, please see:
+http://ionicframework.com/docs/theming/ */
+:root {
+  --ion-color-primary: #fd297b;
+  --ion-color-primary-rgb: 253, 41, 123;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-color-primary-shade: #e02570;
+  --ion-color-primary-tint: #ff437f;
+
+  --ion-font-family: 'Poppins', sans-serif;
+}
