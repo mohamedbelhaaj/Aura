@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, MessageCircle, Flame, MapPin, Clock, Star } from 'lucide-react';
+import { Heart, MessageCircle, Flame, MapPin, Clock} from 'lucide-react';
 import { useHistory } from 'react-router-dom';
+import { collection, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { db } from '../firebaseConfig';
 
 interface Match {
   id: string;
@@ -17,46 +19,132 @@ interface Match {
 const MatchesPages: React.FC = () => {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
+  const history = useHistory();
 
-  // Simuler le chargement des matches
+  // Fonction pour calculer le temps écoulé et le statut en ligne
+  const calculateTimeInfo = (createdAt: Timestamp) => {
+    const matchDate = createdAt.toDate();
+    const now = new Date();
+    const diffMs = now.getTime() - matchDate.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    let lastActive = '';
+    let isOnline = false;
+    let isNew = false;
+
+    if (diffMins < 5) {
+      lastActive = "À l'instant";
+      isOnline = true;
+    } else if (diffMins < 60) {
+      lastActive = `Il y a ${diffMins} min`;
+    } else if (diffHours < 24) {
+      lastActive = `Il y a ${diffHours}h`;
+      isNew = true; // Nouveau si moins de 24h
+    } else if (diffDays < 7) {
+      lastActive = `Il y a ${diffDays}j`;
+    } else {
+      lastActive = matchDate.toLocaleDateString('fr-FR');
+    }
+
+    return { lastActive, isOnline, isNew };
+  };
+
+  // Fonction pour calculer la distance approximative (placeholder)
+  const calculateDistance = () => {
+    // TODO: Implémenter le calcul réel avec la géolocalisation
+    const distances = ['1 km', '2 km', '3 km', '5 km', '8 km', '10 km'];
+    return distances[Math.floor(Math.random() * distances.length)];
+  };
+
+  // Fonction pour récupérer le dernier message d'une conversation
+  const getLastMessage = async (userId: string, matchedUserId: string) => {
+    try {
+      // Créer l'ID de conversation (ordre alphabétique des IDs)
+      const conversationId = [userId, matchedUserId].sort().join('_');
+      
+      // Récupérer le dernier message
+      const messagesRef = collection(db, 'conversations', conversationId, 'messages');
+      const q = query(messagesRef, orderBy('timestamp', 'desc'), limit(1));
+      const messagesSnapshot = await getDocs(q);
+      
+      if (!messagesSnapshot.empty) {
+        const lastMsg = messagesSnapshot.docs[0].data();
+        return lastMsg.text || 'Photo envoyée 📷';
+      }
+      
+      return 'Nouveau match ! 💕';
+    } catch (error) {
+      console.error('Erreur lors de la récupération du dernier message:', error);
+      return 'Dites bonjour ! 👋';
+    }
+  };
+
+  // Charger les matches depuis Firestore
   useEffect(() => {
-    const loadMatches = async () => {
+    const loadMatchesFromFirestore = async () => {
       setLoading(true);
-      // Simulation d'appel API
-      setTimeout(() => {
-        const mockMatches: Match[] = [
-         {
-    id: '88WFIvmt2TcPHXScqx8B4Vobmp03', // matchedUserId
-    name: 'Chaima',
-    age: 24,
-    avatar: 'https://plus.unsplash.com/premium_photo-1664474619075-644dd191935f?ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MXx8JTIzaW1hZ2V8ZW58MHx8MHx8fDA%3D&fm=jpg&q=60&w=3000',
-    lastMessage: '',              // à remplir dynamiquement
-    online: false,                // statut par défaut
-    distance: '',                 // à calculer si localisation dispo
-    lastActive: 'Il y a peu',     // approximation, basée sur `createdAt`
-    isNew: true                   // basé sur `createdAt`
-  }
-    
-        ];
-        setMatches(mockMatches);
+      
+      try {
+        // TODO: Remplacer par l'ID de l'utilisateur connecté (depuis votre contexte d'auth)
+        const currentUserId = "OOMaHAIs51X5Pi2yVnm3mseuLtl1";
+        
+        // Requête Firestore pour récupérer les matches
+        const matchesRef = collection(db, 'matches');
+        const q = query(
+          matchesRef, 
+          where('userId', '==', currentUserId),
+          orderBy('createdAt', 'desc')
+        );
+        
+        const querySnapshot = await getDocs(q);
+        const matchesData: Match[] = [];
+        
+        // Traiter chaque match
+        for (const doc of querySnapshot.docs) {
+          const data = doc.data();
+          
+          // Calculer les informations temporelles
+          const { lastActive, isOnline, isNew } = calculateTimeInfo(data.createdAt);
+          
+          // Récupérer le dernier message
+          const lastMessage = await getLastMessage(currentUserId, data.matchedUserId);
+          
+          matchesData.push({
+            id: data.matchedUserId,
+            name: data.name,
+            age: data.age,
+            avatar: data.image,
+            lastMessage: lastMessage,
+            online: isOnline,
+            distance: calculateDistance(), // TODO: Calculer la vraie distance
+            lastActive: lastActive,
+            isNew: isNew
+          });
+        }
+        
+        setMatches(matchesData);
         setLoading(false);
-      }, 1000);
+      } catch (error) {
+        console.error("Erreur lors du chargement des matches:", error);
+        setLoading(false);
+      }
     };
 
-    loadMatches();
+    loadMatchesFromFirestore();
   }, []);
-const history = useHistory();
 
- const handleMatchClick = (match: Match) => {
-  history.push('/chat', { 
-    selectedMatch: match,
-    matches: matches 
-  });
-};
+  const handleMatchClick = (match: Match) => {
+    history.push('/chat', { 
+      selectedMatch: match,
+      matches: matches 
+    });
+  };
 
   const handleLikeClick = (e: React.MouseEvent, matchId: string) => {
     e.stopPropagation();
-    // Logique pour liker/unliker
+    // TODO: Logique pour liker/unliker
     console.log('Like clicked for:', matchId);
   };
 
