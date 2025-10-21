@@ -5,12 +5,12 @@ import {
   collection, 
   addDoc, 
   query, 
-  where, 
   orderBy, 
   onSnapshot,
   serverTimestamp,
-  Timestamp 
+  Timestamp
 } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';  // ✅ CORRECT - import from auth
 import { db } from '../firebaseConfig';
 
 /* ----------  TYPES  ---------- */
@@ -19,8 +19,6 @@ type Message = {
   text: string;
   sender: 'me' | 'them';
   senderId: string;
-  receiverId: string;
-  conversationId: string;
   timestamp: Date;
   read?: boolean;
 };
@@ -28,8 +26,6 @@ type Message = {
 type FirestoreMessage = {
   text: string;
   senderId: string;
-  receiverId: string;
-  conversationId: string;
   timestamp: Timestamp | ReturnType<typeof serverTimestamp>;
   read: boolean;
 };
@@ -48,20 +44,6 @@ type LocationState = {
   matches?: Match[];
 };
 
-/* ----------  CONSTANTES  ---------- */
-const CURRENT_USER_ID = 'user'; // Remplacez par l'ID réel de l'utilisateur connecté
-
-const defaultMatches: Match[] = [
-  {
-    id: '88WFIvmt2TcPHXScqx8B4Vobmp03',
-    name: 'Chaima',
-    age: 24,
-    avatar: 'https://plus.unsplash.com/premium_photo-1664474619075-644dd191935f?ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MXx8JTIzaW1hZ2V8ZW58MHx8MHx8fDA%3D&fm=jpg&q=60&w=3000',
-    lastMessage: '',
-    online: false,
-  },
-];
-
 /* ----------  HELPER FUNCTIONS  ---------- */
 // Générer un ID de conversation unique (toujours le même ordre pour 2 utilisateurs)
 const generateConversationId = (userId1: string, userId2: string): string => {
@@ -74,10 +56,17 @@ export default function AuraChatApp() {
   const { state } = useLocation() as { state?: LocationState };
   const { selectedMatch: initialMatch, matches: initialMatches } = state || {};
 
+  /* ----- Get current user from Firebase Auth ----- */
+  const auth = getAuth();
+  const currentUser = auth.currentUser;
+  const CURRENT_USER_ID = currentUser?.uid || '';
+
+  console.log('🔥 Current User ID:', CURRENT_USER_ID);
+
   /* ----- état local ----- */
-  const [matchesList] = useState<Match[]>(initialMatches || defaultMatches);
-  const [selectedMatch, setSelectedMatch] = useState<Match>(
-    initialMatch || (initialMatches?.[0] ?? defaultMatches[0])
+  const [matchesList] = useState<Match[]>(initialMatches || []);
+  const [selectedMatch, setSelectedMatch] = useState<Match | null>(
+    initialMatch || (initialMatches?.[0] ?? null)
   );
 
   /* messages stockés par match */
@@ -86,57 +75,72 @@ export default function AuraChatApp() {
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const messages = messagesByMatchId[selectedMatch.id] || [];
-  const conversationId = generateConversationId(CURRENT_USER_ID, selectedMatch.id);
+  const messages = selectedMatch ? (messagesByMatchId[selectedMatch.id] || []) : [];
+  const conversationId = selectedMatch ? generateConversationId(CURRENT_USER_ID, selectedMatch.id) : '';
+
+  console.log('💬 Selected Match:', selectedMatch?.name);
+  console.log('🔑 Conversation ID:', conversationId);
 
   /* ----- Écouter les messages en temps réel depuis Firestore ----- */
   useEffect(() => {
-    if (!selectedMatch.id) return;
+    if (!selectedMatch?.id || !CURRENT_USER_ID) {
+      console.log('❌ Pas de match sélectionné ou utilisateur non connecté');
+      return;
+    }
 
     setLoading(true);
     const conversationId = generateConversationId(CURRENT_USER_ID, selectedMatch.id);
 
-    // Créer une requête pour récupérer les messages de cette conversation
-    const messagesQuery = query(
-      collection(db, 'conversations'),
-      where('conversationId', '==', conversationId),
-      orderBy('timestamp', 'asc')
-    );
+    console.log('👂 Écoute des messages pour conversation:', conversationId);
+
+    // ✅ CORRECT: Écouter les messages dans conversations/{conversationId}/messages
+    const messagesRef = collection(db, 'conversations', conversationId, 'messages');
+    const messagesQuery = query(messagesRef, orderBy('timestamp', 'asc'));
 
     // Écouter les changements en temps réel
-    const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
-      const fetchedMessages: Message[] = [];
-      
-      snapshot.forEach((doc) => {
-        const data = doc.data() as FirestoreMessage;
-        fetchedMessages.push({
-          id: doc.id,
-          text: data.text,
-          sender: data.senderId === CURRENT_USER_ID ? 'me' : 'them',
-          senderId: data.senderId,
-          receiverId: data.receiverId,
-          conversationId: data.conversationId,
-          timestamp: data.timestamp instanceof Timestamp 
-            ? data.timestamp.toDate() 
-            : new Date(),
-          read: data.read || false,
+    const unsubscribe = onSnapshot(
+      messagesQuery, 
+      (snapshot) => {
+        const fetchedMessages: Message[] = [];
+        
+        console.log('📨 Nombre de messages reçus:', snapshot.docs.length);
+        
+        snapshot.forEach((doc) => {
+          const data = doc.data() as FirestoreMessage;
+          console.log('📩 Message:', { id: doc.id, text: data.text, senderId: data.senderId });
+          
+          fetchedMessages.push({
+            id: doc.id,
+            text: data.text,
+            sender: data.senderId === CURRENT_USER_ID ? 'me' : 'them',
+            senderId: data.senderId,
+            timestamp: data.timestamp instanceof Timestamp 
+              ? data.timestamp.toDate() 
+              : new Date(),
+            read: data.read || false,
+          });
         });
-      });
 
-      setMessagesByMatchId((prev) => ({
-        ...prev,
-        [selectedMatch.id]: fetchedMessages,
-      }));
-      
-      setLoading(false);
-    }, (error) => {
-      console.error('Erreur lors de la récupération des messages:', error);
-      setLoading(false);
-    });
+        setMessagesByMatchId((prev) => ({
+          ...prev,
+          [selectedMatch.id]: fetchedMessages,
+        }));
+        
+        setLoading(false);
+        console.log('✅ Messages chargés:', fetchedMessages.length);
+      },
+      (error) => {
+        console.error('❌ Erreur lors de la récupération des messages:', error);
+        setLoading(false);
+      }
+    );
 
     // Nettoyer l'écouteur lors du démontage
-    return () => unsubscribe();
-  }, [selectedMatch.id]);
+    return () => {
+      console.log('🧹 Nettoyage de l\'écouteur de messages');
+      unsubscribe();
+    };
+  }, [selectedMatch?.id, CURRENT_USER_ID]);
 
   /* ----- Auto-scroll vers le bas ----- */
   useEffect(() => {
@@ -145,28 +149,39 @@ export default function AuraChatApp() {
 
   /* ----- Envoyer un message ----- */
   const sendMessage = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !selectedMatch || !CURRENT_USER_ID) {
+      console.log('❌ Impossible d\'envoyer le message:', {
+        hasInput: !!input.trim(),
+        hasMatch: !!selectedMatch,
+        hasUser: !!CURRENT_USER_ID
+      });
+      return;
+    }
 
     const messageText = input.trim();
+    const conversationId = generateConversationId(CURRENT_USER_ID, selectedMatch.id);
+    
     setInput(''); // Vider l'input immédiatement pour une meilleure UX
 
     try {
-      // Ajouter le message à Firestore
-      const messageData: FirestoreMessage = {
+      console.log('📤 Envoi du message vers:', `conversations/${conversationId}/messages`);
+      
+      // ✅ CORRECT: Ajouter le message dans conversations/{conversationId}/messages
+      const messagesRef = collection(db, 'conversations', conversationId, 'messages');
+      
+      const messageData = {
         text: messageText,
         senderId: CURRENT_USER_ID,
-        receiverId: selectedMatch.id,
-        conversationId: conversationId,
         timestamp: serverTimestamp(),
         read: false,
       };
 
-      await addDoc(collection(db, 'conversations'), messageData);
+      const docRef = await addDoc(messagesRef, messageData);
       
-      console.log('Message envoyé avec succès');
+      console.log('✅ Message envoyé avec succès! ID:', docRef.id);
     } catch (error) {
-      console.error('Erreur lors de l\'envoi du message:', error);
-      // Vous pouvez ajouter une notification d'erreur ici
+      console.error('❌ Erreur lors de l\'envoi du message:', error);
+      alert('Erreur lors de l\'envoi du message. Vérifiez la console.');
     }
   };
 
@@ -180,8 +195,42 @@ export default function AuraChatApp() {
 
   /* ----- Sélectionner un match ----- */
   const selectMatch = (m: Match) => {
+    console.log('👤 Sélection du match:', m.name);
     setSelectedMatch(m);
   };
+
+  /* ----- Vérification de sécurité ----- */
+  if (!CURRENT_USER_ID) {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh',
+        flexDirection: 'column',
+        gap: '20px'
+      }}>
+        <h2>❌ Vous devez être connecté</h2>
+        <p>Impossible de charger le chat sans authentification</p>
+      </div>
+    );
+  }
+
+  if (!selectedMatch) {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh',
+        flexDirection: 'column',
+        gap: '20px'
+      }}>
+        <h2>💔 Aucun match sélectionné</h2>
+        <p>Veuillez sélectionner un match depuis la page des matches</p>
+      </div>
+    );
+  }
 
   /* ----------  RENDU  ---------- */
   return (
@@ -234,7 +283,8 @@ export default function AuraChatApp() {
         .message-wrapper { display:flex; }
         .message-wrapper.me { justify-content:flex-end; }
         .message-wrapper.them { justify-content:flex-start; }
-        .message-bubble { max-width:60%; padding:12px 16px; border-radius:20px; }
+        .message-bubble { max-width:60%; padding:12px 16px; border-radius:20px; animation: messageIn 0.3s ease; }
+        @keyframes messageIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .message-bubble.me { background: linear-gradient(135deg,#f43f5e 0%,#ec4899 100%); color:white; border-bottom-right-radius:4px; }
         .message-bubble.them { background:#f3f4f6; color:#1f2937; border-bottom-left-radius:4px; }
         .message-text { font-size:14px; word-wrap: break-word; }
@@ -274,40 +324,42 @@ export default function AuraChatApp() {
         {/* -------  CORPS  ------- */}
         <div className="main-layout">
           {/* Sidebar */}
-          <aside className="sidebar">
-                        <div className="sidebar-header">
-              <h2 className="sidebar-title">
-                <MessageCircle size={20} color="#f43f5e" />
-                Messages
-              </h2>
-              <p className="sidebar-subtitle">{matchesList.length} matchs</p>
-            </div>
+          {matchesList.length > 0 && (
+            <aside className="sidebar">
+              <div className="sidebar-header">
+                <h2 className="sidebar-title">
+                  <MessageCircle size={20} color="#f43f5e" />
+                  Messages
+                </h2>
+                <p className="sidebar-subtitle">{matchesList.length} matchs</p>
+              </div>
 
-            <div className="matches-list">
-              {matchesList.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => selectMatch(m)}
-                  className={`match-item ${selectedMatch.id === m.id ? 'active' : ''}`}
-                >
-                  <div className="match-avatar-wrapper">
-                    <img src={m.avatar} alt={m.name} className="match-avatar" />
-                    {m.online && <div className="online-indicator"></div>}
-                  </div>
-                  <div className="match-info">
-                    <div className="match-name-row">
-                      <span className="match-name">{m.name}</span>
-                      <span className="match-age">{m.age}</span>
+              <div className="matches-list">
+                {matchesList.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => selectMatch(m)}
+                    className={`match-item ${selectedMatch?.id === m.id ? 'active' : ''}`}
+                  >
+                    <div className="match-avatar-wrapper">
+                      <img src={m.avatar} alt={m.name} className="match-avatar" />
+                      {m.online && <div className="online-indicator"></div>}
                     </div>
-                    <p className="match-last-message">{m.lastMessage}</p>
-                  </div>
-                  {m.id === selectedMatch.id && (
-                    <Heart size={20} color="#f43f5e" fill="#f43f5e" />
-                  )}
-                </button>
-              ))}
-            </div>
-          </aside>
+                    <div className="match-info">
+                      <div className="match-name-row">
+                        <span className="match-name">{m.name}</span>
+                        <span className="match-age">{m.age}</span>
+                      </div>
+                      <p className="match-last-message">{m.lastMessage || 'Nouveau match'}</p>
+                    </div>
+                    {selectedMatch?.id === m.id && (
+                      <Heart size={20} color="#f43f5e" fill="#f43f5e" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </aside>
+          )}
 
           {/* Chat */}
           <main className="chat-container">
@@ -346,8 +398,8 @@ export default function AuraChatApp() {
                   <div className="empty-chat-icon">
                     <Heart size={64} color="#f9a8d4" />
                   </div>
-                  <p className="empty-chat-title">C'est un match !</p>
-                  <p className="empty-chat-subtitle">Commencez la conversation</p>
+                  <p className="empty-chat-title">C'est un match ! 💕</p>
+                  <p className="empty-chat-subtitle">Commencez la conversation avec {selectedMatch.name}</p>
                 </div>
               ) : (
                 messages.map((msg) => (
@@ -374,7 +426,7 @@ export default function AuraChatApp() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKey}
-                  placeholder="Écrire un message..."
+                  placeholder={`Écrire un message à ${selectedMatch.name}...`}
                   className="message-input"
                 />
                 <button onClick={sendMessage} disabled={!input.trim()} className="send-btn">
@@ -387,4 +439,4 @@ export default function AuraChatApp() {
       </div>
     </>
   );
-} 
+}

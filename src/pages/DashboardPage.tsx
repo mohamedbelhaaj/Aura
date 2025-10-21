@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { IonApp, IonContent, IonButton, IonIcon } from "@ionic/react";
+import { IonApp, IonContent, IonIcon } from "@ionic/react";
 import { getAuth, signOut } from "firebase/auth";
 import "../theme/DashboardPage.css"
-import { getFirestore, collection, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, onSnapshot, addDoc, serverTimestamp, query, where, getDocs, doc, getDoc } from "firebase/firestore";
 import { app } from "../firebaseConfig";
 import { useHistory } from "react-router-dom";
 import { 
@@ -51,15 +51,15 @@ const DashboardPage: React.FC = () => {
   const currentIndex = useRef(0);
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const db = getFirestore(app);
+  const auth = getAuth(app);
 
   /* 🔥 Charger profils Firestore (exclure l'utilisateur connecté) */
   useEffect(() => {
-    const auth = getAuth(app);
     const currentUser = auth.currentUser;
 
     const unsubscribe = onSnapshot(collection(db, "users"), (snapshot) => {
       const fetchedProfiles: Profile[] = snapshot.docs
-        .filter((doc) => doc.id !== currentUser?.uid) // Exclure l'utilisateur connecté
+        .filter((doc) => doc.id !== currentUser?.uid)
         .map((doc) => ({
           id: doc.id,
           ...(doc.data() as Omit<Profile, "id">),
@@ -67,12 +67,77 @@ const DashboardPage: React.FC = () => {
       setProfiles(fetchedProfiles);
     });
     return () => unsubscribe();
-  }, [db]);
+  }, [db, auth]);
+
+  /* 💕 Créer un match dans Firestore */
+  const createMatch = async (profile: Profile) => {
+    const currentUser = auth.currentUser;
+    
+    if (!currentUser) {
+      console.error('❌ Pas d\'utilisateur connecté');
+      return;
+    }
+
+    try {
+      console.log('💕 Création du match avec:', profile.name);
+      
+      // Vérifier si le match existe déjà
+      const matchesRef = collection(db, 'matches');
+      const q = query(
+        matchesRef,
+        where('userId', '==', currentUser.uid),
+        where('matchedUserId', '==', profile.id)
+      );
+      
+      const existingMatches = await getDocs(q);
+      
+      if (!existingMatches.empty) {
+        console.log('⚠️ Match déjà existant');
+        return;
+      }
+
+      // Récupérer les infos de l'utilisateur actuel depuis Firestore
+      const currentUserDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      const currentUserData = currentUserDoc.data();
+
+      // Créer le match pour l'utilisateur actuel
+      await addDoc(collection(db, 'matches'), {
+        userId: currentUser.uid,
+        matchedUserId: profile.id,
+        name: profile.name,
+        age: profile.age,
+        image: profile.images?.[0] || '/assets/default.jpg',
+        createdAt: serverTimestamp(),
+        status: 'active'
+      });
+
+      // Créer aussi le match réciproque (pour l'autre utilisateur)
+      await addDoc(collection(db, 'matches'), {
+        userId: profile.id,
+        matchedUserId: currentUser.uid,
+        name: currentUserData?.name || 'Utilisateur',
+        age: currentUserData?.age || 25,
+        image: currentUserData?.images?.[0] || currentUser.photoURL || '/assets/default.jpg',
+        createdAt: serverTimestamp(),
+        status: 'active'
+      });
+
+      console.log('✅ Match créé avec succès!');
+      
+      // Optionnel: Afficher une notification
+      // alert(`🎉 C'est un match avec ${profile.name}!`);
+      
+    } catch (error) {
+      console.error('❌ Erreur lors de la création du match:', error);
+    }
+  };
 
   /* 🔄 Swipe */
   const swipe = useCallback((direction: "left" | "right" | "up") => {
     const currentCardRef = cardRefs.current[currentIndex.current];
-    if (!currentCardRef) return;
+    const currentProfile = profiles[currentIndex.current];
+    
+    if (!currentCardRef || !currentProfile) return;
     
     let moveX = 0;
     let moveY = 0;
@@ -81,12 +146,18 @@ const DashboardPage: React.FC = () => {
     if (direction === "left") {
       moveX = -400;
       rotate = -20;
+      console.log('👎 Swipe left:', currentProfile.name);
     } else if (direction === "right") {
       moveX = 400;
       rotate = 20;
+      console.log('👍 Swipe right:', currentProfile.name);
+      // Créer le match dans Firestore
+      createMatch(currentProfile);
     } else if (direction === "up") {
       moveY = -400;
       rotate = 0;
+      console.log('⭐ Super like:', currentProfile.name);
+      createMatch(currentProfile);
     }
 
     currentCardRef.style.transition = "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
@@ -97,7 +168,7 @@ const DashboardPage: React.FC = () => {
       currentIndex.current += 1;
       setCurrentImageIndex(0);
     }, 300);
-  }, []);
+  }, [profiles]);
 
   /* 🖱 Gestion drag */
   const handleDragStart = (e: React.TouchEvent | React.MouseEvent) => {
@@ -174,7 +245,6 @@ const DashboardPage: React.FC = () => {
 
   /* 🚪 Déconnexion */
   const handleLogout = async () => {
-    const auth = getAuth(app);
     await signOut(auth);
     history.push("/login");
   };
@@ -202,11 +272,9 @@ const DashboardPage: React.FC = () => {
             onTouchMove={index === 0 ? handleDragMove : undefined}
             onTouchEnd={index === 0 ? handleDragEnd : undefined}
           >
-            {/* Like/Nope Stamps */}
             <div className="stamp like-stamp">LIKE</div>
             <div className="stamp nope-stamp">NOPE</div>
             
-            {/* Image navigation zones */}
             {index === 0 && (
               <>
                 <div 
@@ -220,7 +288,6 @@ const DashboardPage: React.FC = () => {
               </>
             )}
 
-            {/* Image indicators */}
             {profile.images && profile.images.length > 1 && (
               <div className="image-indicators">
                 {profile.images.map((_, i) => (
@@ -272,10 +339,7 @@ const DashboardPage: React.FC = () => {
   return (
     <IonApp>
       <IonContent className="dashboard-content">
-        {/* Top Bar */}
         <div className="top-bar">
-          
-          
           <div className="aura-logo">
             <IonIcon icon={flameSharp} className="logo-icon" />
             <span>Aura</span>
@@ -300,7 +364,6 @@ const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Container des cartes */}
         <div className="tinder-container">
           {profiles.length > 0 ? renderCards : (
             <div className="empty-state">
@@ -311,7 +374,6 @@ const DashboardPage: React.FC = () => {
           )}
         </div>
 
-        {/* Actions */}
         <div className="actions">
           <button 
             className="action-btn nope-btn"
@@ -335,7 +397,6 @@ const DashboardPage: React.FC = () => {
           </button>
         </div>
 
-        {/* Bottom Navigation (optionnel) */}
         <div className="bottom-nav">
           <button className="nav-item active">
             <IonIcon icon={flameSharp} />
@@ -355,4 +416,4 @@ const DashboardPage: React.FC = () => {
   );
 };
 
-export default DashboardPage;
+export default DashboardPage; 

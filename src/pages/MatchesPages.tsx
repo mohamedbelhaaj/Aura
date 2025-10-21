@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Heart, MessageCircle, Flame, MapPin, Clock} from 'lucide-react';
 import { useHistory } from 'react-router-dom';
 import { collection, query, where, getDocs, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 import { db } from '../firebaseConfig';
 
 interface Match {
@@ -20,6 +21,7 @@ const MatchesPages: React.FC = () => {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const history = useHistory();
+  const auth = getAuth();
 
   // Fonction pour calculer le temps écoulé et le statut en ligne
   const calculateTimeInfo = (createdAt: Timestamp) => {
@@ -87,23 +89,33 @@ const MatchesPages: React.FC = () => {
       setLoading(true);
       
       try {
-        // TODO: Remplacer par l'ID de l'utilisateur connecté (depuis votre contexte d'auth)
-        const currentUserId = "OOMaHAIs51X5Pi2yVnm3mseuLtl1";
+        const currentUser = auth.currentUser;
         
-        // Requête Firestore pour récupérer les matches
+        if (!currentUser) {
+          console.error('❌ Pas d\'utilisateur connecté');
+          setLoading(false);
+          return;
+        }
+
+        const currentUserId = currentUser.uid;
+        console.log('🔥 Chargement des matches pour:', currentUserId);
+        
+        // Requête Firestore pour récupérer les matches (sans orderBy pour éviter l'index)
         const matchesRef = collection(db, 'matches');
         const q = query(
           matchesRef, 
-          where('userId', '==', currentUserId),
-          orderBy('createdAt', 'desc')
+          where('userId', '==', currentUserId)
         );
         
         const querySnapshot = await getDocs(q);
+        console.log('📊 Nombre de matches trouvés:', querySnapshot.docs.length);
+        
         const matchesData: Match[] = [];
         
         // Traiter chaque match
         for (const doc of querySnapshot.docs) {
           const data = doc.data();
+          console.log('💕 Match trouvé:', data);
           
           // Calculer les informations temporelles
           const { lastActive, isOnline, isNew } = calculateTimeInfo(data.createdAt);
@@ -118,24 +130,26 @@ const MatchesPages: React.FC = () => {
             avatar: data.image,
             lastMessage: lastMessage,
             online: isOnline,
-            distance: calculateDistance(), // TODO: Calculer la vraie distance
+            distance: calculateDistance(),
             lastActive: lastActive,
             isNew: isNew
           });
         }
         
+        console.log('✅ Matches chargés:', matchesData);
         setMatches(matchesData);
         setLoading(false);
       } catch (error) {
-        console.error("Erreur lors du chargement des matches:", error);
+        console.error("❌ Erreur lors du chargement des matches:", error);
         setLoading(false);
       }
     };
 
     loadMatchesFromFirestore();
-  }, []);
+  }, [auth]);
 
   const handleMatchClick = (match: Match) => {
+    console.log('👤 Navigation vers chat avec:', match);
     history.push('/chat', { 
       selectedMatch: match,
       matches: matches 
@@ -144,8 +158,7 @@ const MatchesPages: React.FC = () => {
 
   const handleLikeClick = (e: React.MouseEvent, matchId: string) => {
     e.stopPropagation();
-    // TODO: Logique pour liker/unliker
-    console.log('Like clicked for:', matchId);
+    console.log('❤️ Like clicked for:', matchId);
   };
 
   if (loading) {
